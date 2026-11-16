@@ -257,7 +257,10 @@ def bwd(
                     T.gemm(Q_tail_shared, KV_tail_shared, acc_p, transpose_B=True, policy=policy)
 
                 for h_i, bi_i in T.Parallel(block_H, BS):
-                    acc_p[h_i, bi_i] = T.exp2(acc_p[h_i, bi_i] * sm_scale_mul_reciprocal_log2 - lse_shared[h_i])
+                    # Empty rows have LSE=-inf; select zero rather than propagate exp2(-inf - -inf).
+                    acc_p[h_i, bi_i] = T.if_then_else(
+                        mask[bi_i], T.exp2(acc_p[h_i, bi_i] * sm_scale_mul_reciprocal_log2 - lse_shared[h_i]), 0.0
+                    )
 
                 T.copy(acc_p, P_shared_cast)
 

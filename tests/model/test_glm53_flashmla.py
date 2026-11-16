@@ -27,6 +27,7 @@ from arctic_platform.model.implementations.glm52.models.kernels.sparse_mla_flash
 from arctic_platform.model.implementations.glm52.models.kernels.sparse_mla_flashmla import (
     sparse_mla_flashmla_fwd_interface,
 )
+from arctic_platform.model.implementations.glm52.models.kernels.sparse_mla_flashmla import sparse_mla_ref_apply
 from arctic_platform.model.implementations.glm53 import context_parallel
 from arctic_platform.testing_utils import require_torch_gpu
 from arctic_platform.testing_utils import set_seed
@@ -579,6 +580,44 @@ def test_real_flashmla_padded_width_matches_original_reference():
     for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
         assert torch.isfinite(actual_grad).all()
         _assert_bf16_kernel_close(actual_grad, expected_grad)
+
+
+@require_torch_gpu
+@pytest.mark.parametrize("width", [512, 576])
+@pytest.mark.parametrize("zero_empty_upstream", [False, True])
+def test_real_flashmla_fused_empty_row_has_zero_finite_gradients(width, zero_empty_upstream):
+    _require_flashmla_kernel()
+    if not context_parallel._fused_sparse_mla_backward_available():
+        pytest.skip("the empty-row regression requires the fused TileLang backward")
+    set_seed(42)
+    queries, keys, heads, topk = 4, 8, 64, 128
+    query = (torch.randn(1, queries, heads, width, device="cuda") * 0.05).bfloat16().requires_grad_()
+    kv = (torch.randn(1, keys + 1, 1, width, device="cuda") * 0.05).bfloat16()
+    kv[:, keys] = 0
+    kv.requires_grad_()
+    indices = torch.full((1, queries, 1, topk), keys, device="cuda", dtype=torch.int32)
+    for row in range(1, queries):
+        indices[:, row, 0, :row] = torch.arange(row, device="cuda", dtype=torch.int32)
+    scale = width**-0.5
+
+    forward, lse = sparse_mla_flashmla_fwd_interface(query.detach(), kv.detach(), indices, scale)
+    assert torch.isfinite(forward).all()
+    assert torch.isneginf(lse[:, 0]).all()
+    assert torch.isfinite(lse[:, 1:]).all()
+    torch_assert_equal(forward[:, 0], torch.zeros_like(forward[:, 0]))
+    expected = sparse_mla_ref_apply(query, kv, indices, scale)
+    actual = sparse_mla_flashmla_fused_apply(query, kv, indices, scale)
+    _assert_bf16_kernel_close(actual, expected, atol=1e-4)
+    grad = torch.randn_like(actual)
+    if zero_empty_upstream:
+        grad[:, 0] = 0
+    expected_grads = torch.autograd.grad(expected, (query, kv), grad)
+    actual_grads = torch.autograd.grad(actual, (query, kv), grad)
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
+        assert torch.isfinite(actual_grad).all()
+        _assert_bf16_kernel_close(actual_grad, expected_grad)
+    torch_assert_equal(actual_grads[0][:, 0], torch.zeros_like(actual_grads[0][:, 0]))
+    torch_assert_equal(actual_grads[1][:, keys], torch.zeros_like(actual_grads[1][:, keys]))
 
 
 @require_torch_gpu
