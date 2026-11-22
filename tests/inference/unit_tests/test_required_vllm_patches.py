@@ -1,4 +1,5 @@
 from arctic_platform.inference.vllm import config
+from arctic_platform.inference.vllm import decoded_tail_prefix_hit
 from arctic_platform.inference.vllm import deepseek_v41_lora
 from arctic_platform.inference.vllm import dense_prompt_logprobs
 from arctic_platform.inference.vllm import flashmla_sparse_dcp
@@ -78,6 +79,11 @@ def test_required_vllm_patches_are_applied_together(monkeypatch):
         "ensure_flashmla_sparse_bf16_dcp",
         lambda: calls.append("flashmla_sparse_bf16_dcp"),
     )
+    monkeypatch.setattr(
+        decoded_tail_prefix_hit,
+        "ensure_decoded_tail_prefix_hit",
+        lambda: calls.append("decoded_tail_prefix_hit"),
+    )
 
     required_patches.apply_required_vllm_patches()
 
@@ -95,4 +101,5 @@ def test_required_vllm_patches_are_applied_together(monkeypatch):
         "mamba_completion_refresh",
         "deepseek_v41_lora",
         "flashmla_sparse_bf16_dcp",
+        "decoded_tail_prefix_hit",
     ]
